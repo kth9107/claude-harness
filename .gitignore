@@ -1,0 +1,18 @@
+# 로컬 머신 전용 권한/경로 설정 (다른 컴퓨터에서 사용 불가)
+.claude/settings.local.json
+
+# 테스트용 별도 git repo
+_workspace/
+
+# macOS
+.DS_Store
+
+# 환경 변수 / 시크릿
+.env
+.env.*
+*.key
+credentials*
+
+# 로그 / 임시 파일
+*.log
+tmp/
