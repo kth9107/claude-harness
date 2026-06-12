@@ -16,3 +16,6 @@ credentials*
 # 로그 / 임시 파일
 *.log
 tmp/
+
+# 하네스 런타임 상태 (감사/피드백/리포트 산출물)
+.claude/harness/state/

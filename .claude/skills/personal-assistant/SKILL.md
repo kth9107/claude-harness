@@ -1,139 +1,275 @@
 ---
 name: personal-assistant
-description: "범용 개인 어시스턴트 오케스트레이터. 개발(코드 작성/버그픽스/UI), 콘텐츠(글쓰기/번역/편집), 데이터 분석(CSV/통계/차트), 리서치(웹검색/정보수집), 디자인(UX기획/와이어프레임/이미지생성/Figma), GitHub(커밋/푸시/레포생성) 작업 요청을 전문 에이전트에게 자동 라우팅한다. 어떤 작업 요청이든 이 스킬을 사용하라. 재실행, 업데이트, 수정, 보완, 다시 해줘 요청도 이 스킬이 처리한다."
+description: "General-purpose personal assistant orchestrator. Automatically routes development (code writing/bug fixing/UI), content (writing/translation/editing), data analysis (CSV/statistics/charts), research (web search/info gathering), design (UX planning/wireframing/image generation/Figma), and GitHub (commit/push/repo creation) requests to specialized agents. Use this skill for any task request. Also handles re-run, update, fix, supplement, and redo requests."
 ---
 
-# Personal Assistant — 범용 개인 어시스턴트 오케스트레이터
+# Personal Assistant — General-Purpose Personal Assistant Orchestrator
 
-planner-agent가 항상 먼저 실행 계획을 보고하고, 이후 6개 전문 에이전트(dev, content, data, research, design, github)가 작업을 처리한다.
+This harness is maintained as a local graph + audit + feedback + cleanup loop. Before routing a task, inspect `.claude/harness/harness.graph.json` when the request concerns harness structure, agent routing, plugin cleanup, or workflow drift.
 
-## 실행 모드
+## Agent Tree Structure
 
-**단일 도메인 요청** → 해당 에이전트만 서브 에이전트로 호출 (오버헤드 최소화)
+```
+router-agent (sonnet — fixed)
+    ↓
+planner-agent (opus — fixed)
+    ↓
+┌──────────────────────────────────────────────────┐
+│ Upper-tier agents — can be called in parallel     │
+├────────────┬─────────────┬──────────┬────────────┤
+│ dev-agent  │content-agent│data-agent│github-agent│
+│            │    ↓        │          │            │
+│            │(research-   │          │            │
+│            │ agent opt.) │          │            │
+└────────────┴──────┬──────┴──────────┴────────────┘
+                    │
+             design-agent
+                    ↓
+             research-agent (required prerequisite)
 
-**복합 도메인 요청** → 에이전트 팀 구성 후 협업
+security-agent (independent — security audits, hardening, CVE, incident response)
+```
+```
+[Post-processing agents — fixed order]
+test-agent
+├── Phase A: immediately on each agent completion → individual output unit test
+└── Phase B: after all agents complete → integration test
+    ↓
+optimizer-agent
+├── Review Phase B report → identify and improve performance/quality issues (P0/P1)
+└── Re-run Phase B if improvements made (max 1 time)
+    ↓ (after optimizer-agent completes)
+deploy-agent
+└── Execute deployment → health check → deployment report
+```
 
-> 판단 기준: 2개 이상의 에이전트가 서로의 결과물을 참조해야 한다면 팀 모드, 독립적으로 처리 가능하면 서브 에이전트 모드.
+**Core Rules:**
+- `research-agent` is not an independent upper-tier agent. It is a required prerequisite sub-agent for design-agent and an optional sub-agent for content-agent.
+- `test-agent` is not an independent upper-tier agent. It is a post-processing agent automatically called by the orchestrator after upper-tier agents complete.
+- `optimizer-agent` is not an independent upper-tier agent. It is a post-processing agent automatically called by the orchestrator after test-agent Phase B completes.
+- `deploy-agent` only runs after optimizer-agent completes. If test-agent Phase B FAILs, neither optimizer-agent nor deploy-agent is called.
+- router-agent always runs with the `sonnet` model.
+- planner-agent always runs with the `opus` model.
+- Upper-tier agents run with the model assigned by router-agent.
 
-## 에이전트 팀
+---
 
-| 에이전트 | 역할 |
-|---------|------|
-| `planner-agent` | **항상 첫 번째** — 모든 요청의 실행 계획을 분석·보고 |
-| `dev-agent` | 코드 작성, UI 구현, 버그픽스, 아키텍처 설계 |
-| `content-agent` | 글쓰기, 번역, 편집, 기획서, 이메일, SNS |
-| `data-agent` | CSV/Excel 분석, 통계, 시각화, 리포트 |
-| `research-agent` | 웹 검색, 정보 수집, 팩트체크, 트렌드 분석 |
-| `design-agent` | UX 기획, 와이어프레임, 시각 디자인, 이미지 생성, Figma |
-| `github-agent` | GitHub 업로드, 커밋 메시지 작성, 푸시, 오류 해결 |
+## Workflow
 
-## 워크플로우
+### Phase 0: Context Check
 
-### Phase 0: 컨텍스트 확인
+Before starting, check for existing work:
+- `_workspace/` exists + partial modification request → **Partial re-run** (re-call only the relevant agent)
+- `_workspace/` exists + new input provided → **New run** (move existing to `_workspace_prev/`)
+- `_workspace/` does not exist → **Initial run**
 
-시작 전 기존 작업 여부를 확인한다:
+Also perform a harness maintenance check when the request mentions harness structure, audit, cleanup, plugin/skill weight, or recurring failures:
 
-- `_workspace/` 존재 + 부분 수정 요청 → **부분 재실행** (해당 에이전트만 재호출)
-- `_workspace/` 존재 + 새 입력 제공 → **새 실행** (기존을 `_workspace_prev/`로 이동)
-- `_workspace/` 미존재 → **초기 실행**
+```bash
+python3 scripts/harness_audit.py --root /Users/ku/claude
+python3 scripts/harness_report.py --root /Users/ku/claude
+```
 
-### Phase 1: 실행 계획 보고 (planner-agent)
+The maintenance report classifies plugins and skills as keep, conditional keep, disable candidate, or remove candidate. Do not uninstall or delete anything automatically. First report the item name, current purpose, reason, impact, recovery path, and the exact command, then wait for explicit user approval before running commands such as:
 
-모든 요청에서 planner-agent를 먼저 호출하여 실행 계획을 사용자에게 보고한다.
+```bash
+claude plugin uninstall watch@claude-video
+```
+
+If uninstall is unavailable, tell the user to set the plugin to `false` in `~/.claude/settings.json` under `enabledPlugins`, then restart Claude Code or run `/reload-plugins`.
+
+---
+
+### Phase 1: Routing Decision (router-agent)
+
+Call router-agent first in every request.
+
+```
+Agent(
+  agent_file: ".claude/agents/router-agent.md",
+  prompt: [full text of original user request],
+  model: "sonnet"
+)
+```
+
+router-agent outputs:
+- List of upper-tier agents to call
+- Model assigned to each agent (haiku / sonnet / opus)
+- Execution order (parallel / sequential)
+- Sub-agent chains (design-agent → research-agent, etc.)
+
+---
+
+### Phase 2: Execution Plan Report (planner-agent)
+
+Call planner-agent with router-agent results as input.
 
 ```
 Agent(
   agent_file: ".claude/agents/planner-agent.md",
-  prompt: [사용자 원본 요청 전문],
+  prompt: [original user request + router-agent routing decision result],
   model: "opus"
 )
 ```
 
-planner-agent는 실행 계획 보고서를 출력한다. 이후 실행은 Claude 모드에 따라 분기:
-- **자동 승인 모드**: 보고 직후 Phase 2로 자동 진행
-- **일반 모드**: 보고 후 사용자 응답을 기다린 뒤 Phase 2 진행
+planner-agent outputs an execution plan report including model information to the user.
 
-### Phase 2: 요청 분석 및 라우팅
+- **Auto-approval mode**: Automatically proceed to Phase 3 immediately after reporting
+- **Normal mode**: Wait for user response after reporting, then proceed to Phase 3
 
-요청을 분석하여 담당 에이전트와 실행 모드를 결정한다.
+---
 
-**단일 에이전트 라우팅 기준:**
+### Phase 3: Upper-Tier Agent Execution
 
-| 요청 유형 | 담당 에이전트 |
-|---------|------------|
-| 코드 작성, 버그 수정, UI 구현, 앱 개발 | `dev-agent` |
-| 글쓰기, 번역, 편집, 기획서, 이메일, SNS | `content-agent` |
-| 데이터 파일 분석, 통계, 차트, 리포트 | `data-agent` |
-| 웹 검색, 정보 조사, 팩트체크 | `research-agent` |
-| UX 기획, 와이어프레임, 디자인, 이미지 생성, Figma | `design-agent` |
-| GitHub 업로드, 커밋, 푸시, 레포 생성 | `github-agent` |
+Call the agents decided by router-agent with **the model assigned by router**.
 
-**팀 모드 트리거 예시:**
-- "경쟁사 조사 후 분석 리포트 작성" → research + data + content
-- "데이터 분석 결과를 대시보드로 구현" → data + dev
-- "시장 조사 기반 블로그 포스트 작성" → research + content
-- "앱 디자인하고 구현해줘" → design + dev
-- "경쟁사 앱 조사 후 디자인 기획해줘" → research + design
-- "코드 짜고 GitHub에 올려줘" → dev + github
-- "작업 완료 후 GitHub 푸시해줘" → github (단독)
-
-### Phase 2: 실행
-
-**서브 에이전트 모드 (단일 도메인):**
-
+**Single agent:**
 ```
 Agent(
   agent_file: ".claude/agents/{agent-name}.md",
-  prompt: [요청 내용 + 컨텍스트],
+  prompt: [request content + context],
+  model: "{model assigned by router}"
+)
+```
+
+**Parallel team (independent tasks):**
+```
+Call simultaneously in parallel:
+Agent(agent_file: "dev-agent.md",     model: "{router assignment}")
+Agent(agent_file: "data-agent.md",    model: "{router assignment}")
+```
+
+**Sequential team (dependency relationship):**
+```
+1. Agent(agent_file: "design-agent.md", model: "{router assignment}")
+   → design-agent automatically calls research-agent internally (model: sonnet)
+2. Agent(agent_file: "dev-agent.md",    model: "{router assignment}")
+   → Uses design-agent results as input
+```
+
+**Sub-agent chains (handled automatically):**
+- `design-agent` calls research-agent first internally (no explicit instruction needed)
+- `content-agent` calls research-agent internally when research is needed
+
+---
+
+### Phase 3.5: Test Execution (test-agent)
+
+Call test-agent in all cases where upper-tier agent outputs exist. Exception: pure research/translation-only requests.
+
+**Phase A — Individual tests (immediately on each agent completion):**
+```
+On each agent completion signal:
+Agent(
+  agent_file: ".claude/agents/test-agent.md",
+  prompt: [completed agent name + output path + scope assigned to that agent],
+  model: "sonnet"
+)
+```
+- Phase A FAIL (Critical/High): Request rework from that agent, then re-test
+- Phase A PASS or FAIL (Medium/Low): Proceed to next agent, include defects in Phase B report
+
+**Phase B — Integration test (after all agents complete):**
+```
+Agent(
+  agent_file: ".claude/agents/test-agent.md",
+  prompt: [full original request + all Phase A report paths + full output list],
+  model: "sonnet"
+)
+```
+- Phase B FAIL (Critical): Rework related agents then re-run integration test
+- After Phase B completes, notify user of final quality report (`_workspace/test_integration_report.md`)
+
+---
+
+### Phase 3.7: Optimization (optimizer-agent)
+
+Automatically runs after test-agent Phase B completes. Skip for pure analysis/content requests with no deployable output.
+
+```
+Agent(
+  agent_file: ".claude/agents/optimizer-agent.md",
+  prompt: [Phase B report path + all Phase A report paths + full output list],
   model: "opus"
 )
 ```
 
-**에이전트 팀 모드 (복합 도메인):**
+- **Phase B FAIL**: Prohibit optimizer-agent call. Request rework then re-run test.
+- **P0/P1 improvements complete**: Re-run test-agent Phase B (1 cycle limit).
+- **No improvements (P2/P3 only)**: Generate recommendation report then proceed directly to Phase 4.
+- After optimization completes, notify user of `_workspace/optimizer_report.md`.
 
-1. 각 에이전트를 `run_in_background: true`로 병렬 호출 (독립 작업인 경우)
-2. 또는 의존 관계가 있으면 순차 호출 (예: research 완료 후 content 시작)
-3. 결과를 `_workspace/` 에 저장
-4. 최종 통합 산출물 생성
+---
 
-**데이터 전달:**
-- 에이전트 간 중간 산출물: `_workspace/{phase}_{agent}_{artifact}.{ext}`
-- 최종 산출물: 사용자 요청 경로 또는 대화로 직접 전달
+### Phase 4: Deployment (deploy-agent)
 
-### Phase 3: 결과 전달
+Automatically runs after optimizer-agent completes. Skip for pure analysis/content requests with no deployable output.
 
-- 산출물을 사용자에게 직접 전달하거나 파일 경로 안내
-- 후속 작업 필요 여부 확인
-- 개선 피드백 수렴 (필요 시)
-
-## 에러 핸들링
-
-| 상황 | 처리 방침 |
-|------|---------|
-| 에이전트 실패 | 1회 재시도, 재실패 시 결과 없이 진행하고 누락 명시 |
-| 도메인 불명확 | 가장 근접한 에이전트로 라우팅 후 처리 |
-| 복합 요청 실패 | 각 에이전트 결과를 독립적으로 보존, 상충 시 출처 병기 |
-
-## 테스트 시나리오
-
-**정상 흐름 — 단일 도메인:**
 ```
-요청: "Python으로 CSV 파일을 읽어서 평균값을 출력하는 코드 작성해줘"
-→ dev-agent 단독 호출
-→ 코드 파일 반환
+Agent(
+  agent_file: ".claude/agents/deploy-agent.md",
+  prompt: [optimizer_report path + Phase B report path + project root path + deployment environment (production/staging)],
+  model: "sonnet"
+)
 ```
 
-**정상 흐름 — 복합 도메인:**
-```
-요청: "Claude 4 신기능을 조사하고 블로그 포스트로 써줘"
-→ research-agent (조사) → content-agent (작성) 순차 실행
-→ _workspace/research_claude4.md → _workspace/content_blog.md
-→ 최종 블로그 포스트 반환
-```
+- **Phase B FAIL or optimizer-agent incomplete**: Prohibit deploy-agent call. Request rework then re-run test.
+- **Deployment success**: Deliver deployment URL + health check results to user.
+- **Deployment failure**: deploy-agent performs automatic rollback then delivers failure report.
 
-**에러 흐름:**
+---
+
+### Phase 5: Result Delivery
+
+- Deliver outputs + test-agent quality report + deploy-agent deployment report together
+- State deployment URL and health check status clearly
+- Confirm whether follow-up work is needed
+- Gather improvement feedback (if needed)
+- When feedback identifies harness drift, repeated agent failure, or plugin/skill bloat, record it with `scripts/harness_feedback.py` so the next audit can surface improvement candidates.
+
+---
+
+## Model Assignment Quick Reference
+
+| Model | When to Use |
+|-------|-------------|
+| `haiku` | Simple translation, format conversion, short text cleanup |
+| `sonnet` | Code, analysis, research, general content, GitHub (default) |
+| `opus` | Complex design, multi-domain, creative design, planner |
+
+router-agent always makes the final decision, so the orchestrator follows the router output as-is.
+
+---
+
+## Error Handling
+
+| Situation | Action |
+|-----------|--------|
+| Agent failure | Retry once; if it fails again, proceed without results and note the omission |
+| Unclear domain | router-agent assigns the closest matching agent |
+| Complex request failure | Preserve each agent's results independently; cite sources when conflicting |
+| research-agent failure | Retry with modified search terms; if it fails again, proceed with general knowledge |
+| test-agent Phase A FAIL (Critical/High) | Immediately request rework from that agent, re-run Phase A after completion |
+| test-agent Phase B FAIL (Critical) | Rework related agents then re-run full integration test. Prohibit deploy-agent call |
+| test-agent failure (agent itself errors) | Retry once; if it fails again, recommend manual review and proceed to Phase 5 |
+| optimizer-agent improvement then Phase B re-fails | No additional cycle. Record in report and wait for user decision (confirm whether to proceed with deploy) |
+| optimizer-agent failure (agent itself errors) | Retry once; if it fails again, skip optimizer and proceed to Phase 4, note the omission |
+| deploy-agent deployment failure | deploy-agent performs automatic rollback. Deliver failure report and wait for user decision |
+| deploy-agent health check failure | Immediate rollback then root cause report. Redeployment proceeds after user confirmation |
+
+---
+
+## Execution Examples
+
 ```
-research-agent 검색 실패
-→ 검색어 변형 후 재시도
-→ 재실패 시 "검색 결과 없음" 명시하고 content-agent는 일반 지식 기반으로 진행
+# Single: "Add a Next.js feature and deploy"
+router → frontend(sonnet) → test PhaseA → optimizer → deploy
+
+# Parallel: "Implement frontend and backend, then deploy"
+router → frontend(sonnet) + backend(sonnet) [parallel]
+       → test PhaseA each → test PhaseB → optimizer → deploy
+
+# Sequential: "Design the app, implement, deploy"
+router → design(opus) [research inside] → frontend(sonnet)
+       → test PhaseA×2 → test PhaseB → optimizer → deploy
 ```

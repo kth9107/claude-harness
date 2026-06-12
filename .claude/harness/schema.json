@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Claude Harness Graph",
+  "type": "object",
+  "required": ["version", "nodes", "edges"],
+  "properties": {
+    "version": {"type": "integer"},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "label"],
+        "properties": {
+          "id": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": ["agent", "skill", "plugin", "workflow_phase", "process_type"]
+          },
+          "label": {"type": "string"},
+          "path": {"type": "string"},
+          "model": {"type": "string"},
+          "phase": {"type": "string"},
+          "purpose": {"type": "string"},
+          "weight": {"type": "string", "enum": ["light", "medium", "heavy"]},
+          "required_by": {"type": "array", "items": {"type": "string"}},
+          "cleanup_policy": {
+            "type": "string",
+            "enum": ["keep", "conditional_keep", "disable_candidate", "remove_candidate", "disabled"]
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "type"],
+        "properties": {
+          "from": {"type": "string"},
+          "to": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": ["routes", "depends_on", "requires", "post_processes", "feedback_updates", "cleanup_reviews", "uses"]
+          },
+          "condition": {"type": "string"}
+        }
+      }
+    }
+  }
+}
