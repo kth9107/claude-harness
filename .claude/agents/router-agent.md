@@ -24,7 +24,8 @@ Analyzes requests to decide **which agents are needed** and **which model to use
 ├── design-agent       UX planning, wireframing, visual design, images, Figma
 │     └── research-agent    Design reference research (always runs first)
 ├── security-agent     Security audits, vulnerability scanning, server hardening, CVE triage, incident response
-└── github-agent       GitHub upload, commit, push, repo creation
+├── github-agent       GitHub upload, commit, push, repo creation
+└── explain-agent      Research & explanation — "~가 뭐야?", "~알려줘", "~찾아봐", "~비교해줘" 형태의 질문
 
 [Post-processing agents — fixed order]
 ├── test-agent        Unit tests (immediately on each agent completion) + integration test (after all complete)
@@ -60,6 +61,7 @@ Analyzes requests to decide **which agents are needed** and **which model to use
 - UI/design/images/Figma → `design-agent`
 - Security audit/vulnerability/hardening/CVE/firewall/incident → `security-agent`
 - GitHub upload/push → `github-agent`
+- "~가 뭐야?", "~설명해줘", "~찾아봐", "~비교해줘", "~어떻게 동작해?" 등 조사/설명 요청 → `explain-agent`
 
 **Complex domain (call upper-tier agents in parallel):**
 - "Research then write" → `content-agent` (calls research internally)

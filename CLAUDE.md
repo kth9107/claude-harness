@@ -8,7 +8,7 @@ This is a personal workspace at `/Users/ku/claude` with a multi-agent harness.
 
 **에이전트:** router(sonnet) → planner(opus) → 상위 에이전트 → test → optimizer → deploy
 
-상위: `dev` `frontend` `backend` `api` `content` `data` `design` `security` `github`
+상위: `dev` `frontend` `backend` `api` `content` `data` `design` `security` `github` `explain`
 서브: `research` (design/content 내부 호출)
 후처리: `test`(Phase A/B) → `optimizer` → `deploy`
 
